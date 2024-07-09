@@ -1,5 +1,6 @@
 html {
-    background: url("./images/pexels-jaime-reimer-1376930-2662116.jpg") no-repeat center center fixed;
+    /* background: url("./images/pexels-jaime-reimer-1376930-2662116.jpg") no-repeat center center fixed; */
+    background: black;
     background-size: cover;
     background-blend-mode: multiply;
 }
