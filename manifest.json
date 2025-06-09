@@ -3,18 +3,24 @@
     "version": "1.0.0",
     "manifest_version": 3,
     "description": "A beautiful and productive new tab replacement with clock, quick access links, and motivational quotes. Stay organized and inspired every time you open a new tab!",
+    "icons": {
+        "16": "images/newtab.png",
+        "32": "images/newtab.png", 
+        "48": "images/newtab.png",
+        "128": "images/newtab.png"
+    },
     "chrome_url_overrides": {
-        "newtab": "./index.html"
+        "newtab": "index.html"
     },
     "permissions": [
         "storage",
-        "favicon",
-        "management"
-    ],
-    "host_permissions": [
-        "<all_urls>"
+        "favicon"
     ],
     "content_security_policy": {
         "extension_pages": "script-src 'self'; object-src 'self'"
-    }
+    },
+    "web_accessible_resources": [{
+        "resources": ["images/*"],
+        "matches": ["<all_urls>"]
+    }]
 }
