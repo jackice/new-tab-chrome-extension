@@ -38,6 +38,27 @@ class QuickAccess extends HTMLElement {
             display: flex;
             align-items: center;
             justify-content: center;
+            overflow: hidden;
+            position: relative;
+        }
+        
+        .access-icon img {
+            width: 24px;
+            height: 24px;
+            object-fit: contain;
+            image-rendering: -webkit-optimize-contrast;
+            background: transparent;
+            mix-blend-mode: multiply;
+            /* 强制去除白色背景 */
+            filter: brightness(1.1) drop-shadow(0 0 0 var(--icon-bg));
+        }
+        
+        /* For dark mode compatibility */
+        @media (prefers-color-scheme: dark) {
+            .access-icon img {
+                mix-blend-mode: normal;
+                filter: brightness(0.8);
+            }
         }
         
         .access-name {
@@ -346,11 +367,16 @@ class QuickAccess extends HTMLElement {
         try {
             const saved = localStorage.getItem('quickAccessEntries');
             if (saved) {
-                this.entries = JSON.parse(saved);
-                console.log('Loaded entries:', this.entries); // 调试日志
+                const parsed = JSON.parse(saved);
+                // 确保每个条目都有favicon
+                this.entries = parsed.map(entry => {
+                    if (!entry.favicon) {
+                        return {...entry, favicon: ''}; // 渲染时会自动获取
+                    }
+                    return entry;
+                });
             } else {
                 this.entries = [...QuickAccess.DEFAULT_ENTRIES];
-                console.log('Using default entries'); // 调试日志
             }
         } catch (e) {
             console.error('Failed to load entries:', e);
@@ -381,19 +407,28 @@ class QuickAccess extends HTMLElement {
 
     async getFavicon(url) {
         try {
-            // 更严格的URL验证
+            // Ensure URL is properly formatted
             if (!/^https?:\/\//i.test(url)) {
                 url = 'https://' + url;
             }
             const parsedUrl = new URL(url);
-            if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
-                throw new Error('Invalid URL protocol');
+            const domain = parsedUrl.hostname;
+            
+            // Try Chrome's favicon API first
+            if (chrome?.runtime?.id) {
+                const faviconUrl = `chrome-extension://${chrome.runtime.id}/_favicon/?pageUrl=${encodeURIComponent(url)}&size=32`;
+                // Verify the favicon exists
+                const response = await fetch(faviconUrl, {method: 'HEAD'});
+                if (response.ok) return faviconUrl;
             }
-            const domain = new URL(url).hostname;
-            return `https://www.google.com/s2/favicons?domain=${domain}`;
+            
+            // Fallback to Google's service with higher resolution
+            return `https://www.google.com/s2/favicons?domain=${domain}&sz=64`;
+            
         } catch (e) {
             console.warn('Failed to get favicon for:', url, e);
-            return 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZD0iTTEyIDJDNi40NzcgMiAyIDYuNDc3IDIgMTJzNC40NzcgMTAgMTAgMTAgMTAtNC40NzcgMTAtMTBTMTcuNTIzIDIgMTIgMnptMCAyYzQuNDE4IDAgOCAzLjU4MiA4IDhzLTMuNTgyIDgtOCA4LTgtMy41ODItOC04IDMuNTgyLTggOC04eiIvPjwvc3ZnPg==';
+            // Use a cleaner default link icon
+            return 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZD0iTTEwIDEzYTUgNSAwIDAgMCA3LjU0LjU0bDMtM2E1IDUgMCAwIDAtNy4wNy03LjA3bC0xLjcyIDEuNzEiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzY2NiIgc3Ryb2tlLXdpZHRoPSIyIi8+PHBhdGggZD0iTTE0IDExYTUgNSAwIDAgMC03LjU0LS41NGwtMyAzYTUgNSAwIDAgMCA3LjA3IDcuMDdsMS43MS0xLjcxIiBmaWxsPSJub25lIiBzdHJva2U9IiM2NjYiIHN0cm9rZS13aWR0aD0iMiIvPjwvc3ZnPg==';
         }
     }
 
@@ -412,11 +447,10 @@ class QuickAccess extends HTMLElement {
         let cardsHtml = '';
         if (this.entries.length > 0) {
             const cards = await Promise.all(this.entries.map(async (entry, index) => {
-                const favicon = await this.getFavicon(entry.url);
                 return `
                     <div class="access-card" data-url="${entry.url}" data-index="${index}">
                         <div class="access-icon">
-                            <img src="${favicon}" width="24" height="24" />
+                            <img src="${entry.favicon || await this.getFavicon(entry.url)}" width="24" height="24" />
                         </div>
                         <div class="access-name">${entry.name}</div>
                         <div class="access-actions">
@@ -492,9 +526,12 @@ class QuickAccess extends HTMLElement {
             }
         });
 
-        this.shadowRoot.getElementById('add-card').addEventListener('click', () => {
-            this.showEntryDialog();
-        });
+        const addCard = this.shadowRoot.getElementById('add-card');
+        if (addCard) {
+            addCard.addEventListener('click', () => {
+                this.showEntryDialog();
+            });
+        }
     }
 
     showEntryDialog(entry = null) {
@@ -596,16 +633,29 @@ class QuickAccess extends HTMLElement {
             const url = urlInput.value.trim();
             
             if (name && url) {
+                // 先保存条目，稍后获取favicon
+                const newEntry = { name, url, favicon: '' };
                 if (entry) {
                     // Update existing entry
-                    this.entries[entry.index] = { name, url };
+                    this.entries[entry.index] = newEntry;
                 } else {
                     // Add new entry
-                    this.entries.push({ name, url });
+                    this.entries.push(newEntry);
                 }
                 this.saveEntries();
                 this.render();
-                document.body.removeChild(dialog);
+                this.shadowRoot.removeChild(dialog);
+                
+                // 异步获取favicon并更新
+                this.getFavicon(url).then(favicon => {
+                    if (entry) {
+                        this.entries[entry.index].favicon = favicon;
+                    } else {
+                        this.entries[this.entries.length - 1].favicon = favicon;
+                    }
+                    this.saveEntries();
+                    this.render();
+                });
             } else {
                 // Show error if fields are empty
                 if (!name) nameInput.style.borderColor = 'var(--danger-color, #f44336)';
@@ -616,7 +666,7 @@ class QuickAccess extends HTMLElement {
         // Close dialog when clicking outside
         dialog.addEventListener('click', (e) => {
             if (e.target === dialog) {
-                document.body.removeChild(dialog);
+                this.shadowRoot.removeChild(dialog);
             }
         });
     }
