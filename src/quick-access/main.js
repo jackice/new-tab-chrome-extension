@@ -23,6 +23,22 @@ class QuickAccess extends HTMLElement {
             box-shadow: var(--card-shadow);
             cursor: pointer;
             transition: transform 0.2s;
+            position: relative;
+            touch-action: none;
+            user-select: none;
+        }
+
+        .access-card.dragging {
+            opacity: 0.5;
+            transform: scale(1.05);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+            z-index: 100;
+        }
+
+        .access-card.placeholder {
+            background: var(--icon-bg);
+            border: 2px dashed var(--text-color);
+            opacity: 0.7;
         }
         
         .access-card:hover {
@@ -347,13 +363,18 @@ class QuickAccess extends HTMLElement {
         super();
         this.attachShadow({ mode: "open" });
         this.entries = [];
+        this._dragState = {
+            isDragging: false,
+            draggedIndex: -1,
+            placeholderIndex: -1
+        };
         this._eventListeners = new Map();
     }
 
     disconnectedCallback() {
         // Clean up event listeners
-        this._eventListeners.forEach((handler, element) => {
-            element.removeEventListener(handler.event, handler.callback);
+        this._eventListeners.forEach(({element, event, callback}) => {
+            element.removeEventListener(event, callback);
         });
         this._eventListeners.clear();
     }
@@ -384,6 +405,125 @@ class QuickAccess extends HTMLElement {
         }
     }
 
+    _handleDragStart(e, index) {
+        const card = e.currentTarget;
+        this._dragState.isDragging = true;
+        this._dragState.draggedIndex = index;
+        card.classList.add('dragging');
+        e.dataTransfer.setData('text/plain', index);
+        e.dataTransfer.effectAllowed = 'move';
+    }
+
+    _handleDragEnd() {
+        this._dragState.isDragging = false;
+        const placeholder = this.shadowRoot.querySelector('.access-card.placeholder');
+        if (placeholder) placeholder.remove();
+        this._dragState.placeholderIndex = -1;
+        this.shadowRoot.querySelectorAll('.access-card.dragging').forEach(c => 
+            c.classList.remove('dragging')
+        );
+    }
+
+    _handleDragOver(e, index) {
+        e.preventDefault();
+        if (!this._dragState.isDragging) return;
+        
+        const {draggedIndex} = this._dragState;
+        if (draggedIndex === index) return;
+
+        let placeholder = this.shadowRoot.querySelector('.access-card.placeholder');
+        if (!placeholder) {
+            placeholder = document.createElement('div');
+            placeholder.className = 'access-card placeholder';
+            placeholder.innerHTML = '<div class="access-icon"></div><div class="access-name"></div>';
+        }
+        
+        const card = e.currentTarget;
+        if (!placeholder.parentNode || this._dragState.placeholderIndex !== index) {
+            card.parentNode.insertBefore(placeholder, card);
+        }
+        
+        this._dragState.placeholderIndex = index;
+    }
+
+    async _handleDrop(e, index) {
+        e.preventDefault();
+        if (!this._dragState.isDragging) return;
+        
+        const {draggedIndex} = this._dragState;
+        if (draggedIndex === index) return;
+
+        // Reorder entries
+        const [draggedItem] = this.entries.splice(draggedIndex, 1);
+        this.entries.splice(index, 0, draggedItem);
+        
+        // Save and re-render
+        this.saveEntries();
+        await this.render();
+    }
+
+    setupCardEventListeners() {
+        const cards = Array.from(this.shadowRoot.querySelectorAll('.access-card:not(#add-card)'));
+        
+        cards.forEach((card, index) => {
+            card.setAttribute('draggable', 'true');
+            
+            // Store references for cleanup
+            const handlers = {
+                dragstart: (e) => this._handleDragStart(e, index),
+                dragend: () => this._handleDragEnd(),
+                dragover: (e) => this._handleDragOver(e, index),
+                drop: (e) => this._handleDrop(e, index)
+            };
+            
+            // Add event listeners
+            Object.entries(handlers).forEach(([event, callback]) => {
+                card.addEventListener(event, callback);
+                this._eventListeners.set(card, {event, callback});
+            });
+
+            // Menu and click handlers...
+            card.addEventListener('click', (e) => {
+                if (!e.target.closest('.access-actions')) {
+                    window.location.href = card.dataset.url;
+                }
+            });
+
+            const menuBtn = card.querySelector('.menu-btn');
+            const menuDropdown = card.querySelector('.menu-dropdown');
+            
+            menuBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                document.querySelectorAll('.menu-dropdown.show').forEach(d => {
+                    if (d !== menuDropdown) d.classList.remove('show');
+                });
+                menuDropdown.classList.toggle('show');
+            });
+
+            card.querySelector('.edit-btn').addEventListener('click', (e) => {
+                e.stopPropagation();
+                menuDropdown.classList.remove('show');
+                this.editEntry(parseInt(card.dataset.index));
+            });
+
+            card.querySelector('.delete-btn').addEventListener('click', (e) => {
+                e.stopPropagation();
+                menuDropdown.classList.remove('show');
+                this.deleteEntry(parseInt(card.dataset.index));
+            });
+
+            const clickHandler = (e) => {
+                if (!card.contains(e.target)) {
+                    menuDropdown.classList.remove('show');
+                    document.removeEventListener('click', clickHandler);
+                }
+            };
+            const handler = clickHandler.bind(this);
+            document.addEventListener('click', handler);
+            card._clickHandler = handler;
+        });
+    }
+
     saveEntries() {
         try {
             // 添加数据验证
@@ -405,9 +545,31 @@ class QuickAccess extends HTMLElement {
     // 添加在类顶部
     static DEFAULT_ENTRIES = Object.freeze([]);
 
+    validateUrl(url) {
+        try {
+            // Basic URL validation
+            if (!url) return false;
+            
+            // Add https:// if missing
+            if (!/^https?:\/\//i.test(url)) {
+                url = 'https://' + url;
+            }
+            
+            // Try constructing URL object to validate
+            new URL(url);
+            return true;
+        } catch (e) {
+            return false;
+        }
+    }
+
     async getFavicon(url) {
         try {
-            // Ensure URL is properly formatted
+            // Ensure URL is properly formatted and validated
+            if (!this.validateUrl(url)) {
+                throw new Error('Invalid URL format');
+            }
+            
             if (!/^https?:\/\//i.test(url)) {
                 url = 'https://' + url;
             }
@@ -433,16 +595,18 @@ class QuickAccess extends HTMLElement {
     }
 
     async render() {
-        // 添加渲染开始事件
+        // Dispatch render start event
         this.dispatchEvent(new CustomEvent('quickaccess-render-start', {
             bubbles: true,
             composed: true
         }));
 
-        // 确保entries存在且是数组
+        // Validate entries
         if (!Array.isArray(this.entries)) {
             this.entries = [...QuickAccess.DEFAULT_ENTRIES];
         }
+
+        // Initialize drag state in constructor only
 
         let cardsHtml = '';
         if (this.entries.length > 0) {
@@ -475,55 +639,120 @@ class QuickAccess extends HTMLElement {
             </div>
         `;
 
-        this.shadowRoot.querySelectorAll('.access-card').forEach(card => {
+        // Setup event handlers for all cards
+        const cards = Array.from(this.shadowRoot.querySelectorAll('.access-card'));
+        
+        cards.forEach(card => {
             if (card.id !== 'add-card') {
                 // Open site on card click
-                card.addEventListener('click', (e) => {
+                const clickHandler = (e) => {
                     if (!e.target.closest('.access-actions')) {
                         window.location.href = card.dataset.url;
                     }
-                });
+                };
+                card.addEventListener('click', clickHandler);
+                this._eventListeners.set(card, {event: 'click', callback: clickHandler});
 
                 // Menu button
                 const menuBtn = card.querySelector('.menu-btn');
                 const menuDropdown = card.querySelector('.menu-dropdown');
                 
-                menuBtn.addEventListener('click', (e) => {
+                const menuBtnHandler = (e) => {
                     e.stopPropagation();
-                    // Close any other open menus
                     document.querySelectorAll('.menu-dropdown.show').forEach(d => {
                         if (d !== menuDropdown) d.classList.remove('show');
                     });
                     menuDropdown.classList.toggle('show');
-                });
+                };
+                menuBtn.addEventListener('click', menuBtnHandler);
+                this._eventListeners.set(menuBtn, {event: 'click', callback: menuBtnHandler});
 
                 // Edit button
-                card.querySelector('.edit-btn').addEventListener('click', (e) => {
+                const editBtn = card.querySelector('.edit-btn');
+                const editHandler = (e) => {
                     e.stopPropagation();
                     menuDropdown.classList.remove('show');
                     this.editEntry(parseInt(card.dataset.index));
-                });
+                };
+                editBtn.addEventListener('click', editHandler);
+                this._eventListeners.set(editBtn, {event: 'click', callback: editHandler});
 
                 // Delete button
-                card.querySelector('.delete-btn').addEventListener('click', (e) => {
+                const deleteBtn = card.querySelector('.delete-btn');
+                const deleteHandler = (e) => {
                     e.stopPropagation();
                     menuDropdown.classList.remove('show');
                     this.deleteEntry(parseInt(card.dataset.index));
-                });
+                };
+                deleteBtn.addEventListener('click', deleteHandler);
+                this._eventListeners.set(deleteBtn, {event: 'click', callback: deleteHandler});
 
                 // Close menu when clicking outside
-                const clickHandler = (e) => {
+                const outsideClickHandler = (e) => {
                     if (!card.contains(e.target)) {
                         menuDropdown.classList.remove('show');
-                        document.removeEventListener('click', clickHandler);
+                        document.removeEventListener('click', outsideClickHandler);
                     }
                 };
-                const handler = clickHandler.bind(this);
-                document.addEventListener('click', handler);
-                
-                // Store reference for cleanup
-                card._clickHandler = handler;
+                const boundHandler = outsideClickHandler.bind(this);
+                document.addEventListener('click', boundHandler);
+                card._clickHandler = boundHandler;
+
+                // Setup drag handlers
+                card.setAttribute('draggable', 'true');
+                const dragStartHandler = (e) => {
+                    card.classList.add('dragging');
+                    e.dataTransfer.setData('text/plain', card.dataset.index);
+                };
+                card.addEventListener('dragstart', dragStartHandler);
+                this._eventListeners.set(card, {event: 'dragstart', callback: dragStartHandler});
+
+                const dragEndHandler = () => {
+                    card.classList.remove('dragging');
+                };
+                card.addEventListener('dragend', dragEndHandler);
+                this._eventListeners.set(card, {event: 'dragend', callback: dragEndHandler});
             }
+        });
+
+        // Setup drop zones
+        cards.forEach(card => {
+            const dragoverHandler = (e) => {
+                e.preventDefault();
+                const draggingCard = this.shadowRoot.querySelector('.access-card.dragging');
+                if (draggingCard && draggingCard !== card) {
+                    const cards = Array.from(this.shadowRoot.querySelectorAll('.access-card:not(#add-card)'));
+                    const fromIndex = cards.indexOf(draggingCard);
+                    const toIndex = cards.indexOf(card);
+                    
+                    if (fromIndex < toIndex) {
+                        card.parentNode.insertBefore(draggingCard, card.nextSibling);
+                    } else {
+                        card.parentNode.insertBefore(draggingCard, card);
+                    }
+                }
+            };
+            card.addEventListener('dragover', dragoverHandler);
+            this._eventListeners.set(card, {event: 'dragover', callback: dragoverHandler});
+
+            const dropHandler = (e) => {
+                e.preventDefault();
+                const fromIndex = e.dataTransfer.getData('text/plain');
+                const draggingCard = this.shadowRoot.querySelector('.access-card.dragging');
+                if (draggingCard) {
+                    const cards = Array.from(this.shadowRoot.querySelectorAll('.access-card:not(#add-card)'));
+                    const toIndex = cards.indexOf(card);
+                    
+                    // Reorder entries array
+                    const [removed] = this.entries.splice(fromIndex, 1);
+                    this.entries.splice(toIndex, 0, removed);
+                    
+                    // Save new order
+                    this.saveEntries();
+                }
+            };
+            card.addEventListener('drop', dropHandler);
+            this._eventListeners.set(card, {event: 'drop', callback: dropHandler});
         });
 
         const addCard = this.shadowRoot.getElementById('add-card');
@@ -628,47 +857,84 @@ class QuickAccess extends HTMLElement {
             this.shadowRoot.removeChild(dialog);
         });
 
-        saveBtn.addEventListener('click', () => {
-            const name = nameInput.value.trim();
-            const url = urlInput.value.trim();
+        // Validate form fields
+        const validateForm = () => {
+            const nameValid = nameInput.value.trim().length > 0;
+            const urlText = urlInput.value.trim();
+            const urlValid = urlText.length > 0 && this.validateUrl(urlText);
             
-            if (name && url) {
-                // 先保存条目，稍后获取favicon
-                const newEntry = { name, url, favicon: '' };
+            nameInput.style.borderColor = nameValid ? '' : 'var(--danger-color, #f44336)';
+            urlInput.style.borderColor = urlValid ? '' : 'var(--danger-color, #f44336)';
+            
+            saveBtn.disabled = !(nameValid && urlValid);
+            return nameValid && urlValid;
+        };
+
+        // Initial validation
+        validateForm();
+
+        // Validate on input
+        nameInput.addEventListener('input', validateForm);
+        urlInput.addEventListener('input', validateForm);
+
+        saveBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            if (!validateForm()) {
+                // Show more specific error if URL is invalid
+                if (urlInput.value.trim().length > 0 && !this.validateUrl(urlInput.value.trim())) {
+                    urlInput.style.borderColor = 'var(--danger-color, #f44336)';
+                    urlInput.placeholder = 'Please enter a valid URL (e.g. example.com)';
+                }
+                return;
+            }
+                
+            const name = nameInput.value.trim();
+            let url = urlInput.value.trim();
+                
+            // Ensure URL has protocol
+            if (!/^https?:\/\//i.test(url)) {
+                url = 'https://' + url;
+            }
+            
+            // Save entry first, then get favicon later
+            const newEntry = { name, url, favicon: '' };
+            if (entry) {
+                // Update existing entry
+                this.entries[entry.index] = newEntry;
+            } else {
+                // Add new entry
+                this.entries.push(newEntry);
+            }
+            this.saveEntries();
+            this.render();
+            this.shadowRoot.removeChild(dialog);
+            
+            // Async get favicon and update
+            this.getFavicon(url).then(favicon => {
                 if (entry) {
-                    // Update existing entry
-                    this.entries[entry.index] = newEntry;
+                    this.entries[entry.index].favicon = favicon;
                 } else {
-                    // Add new entry
-                    this.entries.push(newEntry);
+                    this.entries[this.entries.length - 1].favicon = favicon;
                 }
                 this.saveEntries();
                 this.render();
-                this.shadowRoot.removeChild(dialog);
-                
-                // 异步获取favicon并更新
-                this.getFavicon(url).then(favicon => {
-                    if (entry) {
-                        this.entries[entry.index].favicon = favicon;
-                    } else {
-                        this.entries[this.entries.length - 1].favicon = favicon;
-                    }
-                    this.saveEntries();
-                    this.render();
-                });
-            } else {
-                // Show error if fields are empty
-                if (!name) nameInput.style.borderColor = 'var(--danger-color, #f44336)';
-                if (!url) urlInput.style.borderColor = 'var(--danger-color, #f44336)';
-            }
+            });
         });
 
-        // Close dialog when clicking outside
-        dialog.addEventListener('click', (e) => {
-            if (e.target === dialog) {
+        // Prevent closing when clicking inside dialog content
+        dialogContent.addEventListener('click', (e) => {
+            e.stopPropagation();
+        });
+
+        // Only allow closing via cancel button or clicking outside
+        const closeDialog = () => {
+            if (dialog && dialog.parentNode === this.shadowRoot) {
                 this.shadowRoot.removeChild(dialog);
             }
-        });
+        };
+
+        cancelBtn.addEventListener('click', closeDialog);
+        dialog.addEventListener('click', closeDialog);
     }
 
     addNewEntry() {
@@ -720,23 +986,28 @@ class QuickAccess extends HTMLElement {
         dialog.appendChild(dialogContent);
         this.shadowRoot.appendChild(dialog);
 
-        cancelBtn.addEventListener('click', () => {
-            document.body.removeChild(dialog);
+        // Prevent closing when clicking inside dialog content
+        dialogContent.addEventListener('click', (e) => {
+            e.stopPropagation();
         });
 
+        const closeDialog = () => {
+            if (dialog && dialog.parentNode === this.shadowRoot) {
+                this.shadowRoot.removeChild(dialog);
+            }
+        };
+
+        cancelBtn.addEventListener('click', closeDialog);
         confirmBtn.addEventListener('click', () => {
             this.entries.splice(index, 1);
             this.saveEntries();
             this.render();
-            document.body.removeChild(dialog);
+            closeDialog();
         });
 
-        // Close dialog when clicking outside
-        dialog.addEventListener('click', (e) => {
-            if (e.target === dialog) {
-                document.body.removeChild(dialog);
-            }
-        });
+        // Only allow closing via buttons or clicking outside
+        dialog.addEventListener('click', closeDialog);
+        this._eventListeners.set(dialog, {event: 'click', callback: closeDialog});
     }
 }
 

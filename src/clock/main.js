@@ -1,34 +1,27 @@
 class MyClock extends HTMLElement {
     static styles = `
-<style>
+        <style>
+            :host {
+                width: 100%;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                contain: content; /* Improves performance by limiting scope of reflows */
+            }
 
-:host {
-  width: 100%;
-  display: flex;
-  justify-content: center; /* 水平居中 */
-  align-items: center; /* 垂直居中 */
-}
-
-#clock {
-    font-size: 5rem;
-    font-weight: 700;
-    letter-spacing: 10px;
-    font-family: "Open Sans", Arial, sans-serif;
-    color: var(--text-color);
-  }
-
-@media screen and (min-width: 900px) {
-  #clock {
-    font-size: 8rem;
-  }
-  }
-</style>
-`;
-    get template() {
-        return `
-    ${MyClock.styles}
-    <div id="clock"></div>
+            #clock {
+                font-size: clamp(3rem, 10vw, 8rem); /* Responsive font sizing */
+                font-weight: 700;
+                letter-spacing: 0.05em;
+                font-family: "Open Sans", system-ui, sans-serif;
+                color: var(--text-color);
+                will-change: contents; /* Hint browser about animation */
+            }
+        </style>
     `;
+    
+    get template() {
+        return `${MyClock.styles}<div id="clock" aria-live="polite"></div>`;
     }
 
     constructor() {
@@ -44,9 +37,9 @@ class MyClock extends HTMLElement {
     init() {
         const clockElement = this.shadowRoot.getElementById("clock");
         let lastTime = "";
-        let timeoutId = null;
+        let frameId = null;
         
-        const updateTime = () => {
+        const updateTime = (timestamp) => {
             const now = new Date();
             const timeString = now.toLocaleTimeString();
             
@@ -56,17 +49,16 @@ class MyClock extends HTMLElement {
                 lastTime = timeString;
             }
             
-            // Clear previous timeout and schedule next update
-            if (timeoutId) clearTimeout(timeoutId);
-            const delay = 1000 - now.getMilliseconds();
-            timeoutId = setTimeout(updateTime, delay);
+            // Use requestAnimationFrame for smoother updates
+            frameId = requestAnimationFrame(updateTime);
         };
         
-        updateTime();
+        // Start the clock
+        frameId = requestAnimationFrame(updateTime);
         
         // Clean up on disconnect
-        this.disconnectCallback = () => {
-            if (timeoutId) clearTimeout(timeoutId);
+        this.disconnectedCallback = () => {
+            if (frameId) cancelAnimationFrame(frameId);
         };
     }
 }
