@@ -14,8 +14,7 @@ class MyClock extends HTMLElement {
     font-weight: 700;
     letter-spacing: 10px;
     font-family: "Open Sans", Arial, sans-serif;
-    color: white;
-    // color: black;
+    color: var(--text-color);
   }
 
 @media screen and (min-width: 900px) {
@@ -43,14 +42,32 @@ class MyClock extends HTMLElement {
     }
 
     init() {
-        const setTime = () => {
-            const localeTimeString = new Date().toLocaleTimeString();
-            this.shadowRoot.getElementById("clock").innerHTML = localeTimeString;
+        const clockElement = this.shadowRoot.getElementById("clock");
+        let lastTime = "";
+        let timeoutId = null;
+        
+        const updateTime = () => {
+            const now = new Date();
+            const timeString = now.toLocaleTimeString();
+            
+            // Only update DOM if time actually changed
+            if (timeString !== lastTime) {
+                clockElement.textContent = timeString;
+                lastTime = timeString;
+            }
+            
+            // Clear previous timeout and schedule next update
+            if (timeoutId) clearTimeout(timeoutId);
+            const delay = 1000 - now.getMilliseconds();
+            timeoutId = setTimeout(updateTime, delay);
         };
-        setTime();
-        setInterval(() => {
-            setTime();
-        }, 1000);
+        
+        updateTime();
+        
+        // Clean up on disconnect
+        this.disconnectCallback = () => {
+            if (timeoutId) clearTimeout(timeoutId);
+        };
     }
 }
 
