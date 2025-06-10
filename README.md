@@ -23,12 +23,3 @@ A beautiful and productive new tab replacement that helps you stay organized and
 2. Go to `chrome://extensions` in your browser
 3. Enable "Developer mode"
 4. Click "Load unpacked" and select the extension folder
-
-## 🤝 Contributing
-
-Contributions are welcome! Please open an issue or pull request if you'd like to suggest improvements.
-
-## 🙏 Credits
-
-Inspired by:
-- [MariusBongarts/new-tab-chrome-extension](https://github.com/MariusBongarts/new-tab-chrome-extension)
